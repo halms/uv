@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 
 use uv_configuration::{DependencyGroups, DependencyGroupsWithDefaults};
-use uv_lock::{Lock, Package};
+use uv_lock::{Lock, Package, check_preview_features};
 use uv_normalize::PackageName;
 use uv_preview::{Preview, PreviewFeature};
 use uv_warnings::warn_user;
@@ -63,6 +63,9 @@ impl FrozenWorkspace {
                         return Ok(None);
                     }
                 }
+                // Only enforce the ancestor's requirements once we know it owns this member.
+                check_preview_features(workspace.lock.requires_preview_features())
+                    .with_context(|| format!("Cannot use frozen lockfile `{}`", path.display()))?;
                 if workspace.lock.configured_member_default_groups().is_none() {
                     bail!(
                         "Frozen lockfile discovery requires a lockfile with revision 5 or later; run `uv lock` to update it"
@@ -91,7 +94,7 @@ impl FrozenWorkspace {
         let contents = fs_err::tokio::read_to_string(&path)
             .await
             .with_context(|| format!("Failed to read lockfile `{}`", path.display()))?;
-        let lock = Lock::from_toml(&contents)
+        let lock = Lock::from_toml_for_inspection(&contents)
             .with_context(|| format!("Failed to parse lockfile `{}`", path.display()))?;
         Ok(Self { root, lock })
     }

@@ -51,6 +51,96 @@ fn sync() -> Result<()> {
     Ok(())
 }
 
+/// A future preview may write data that this version of uv cannot interpret.
+#[test]
+fn lockfile_unknown_preview_with_unreadable_packages() -> Result<()> {
+    let context = uv_test::test_context!("3.12");
+    context
+        .temp_dir
+        .child("pyproject.toml")
+        .write_str("[tool.uv.workspace]")?;
+    context.temp_dir.child("uv.lock").write_str(indoc! {r#"
+        version = 1
+        requires-preview-features = ["future-feature"]
+        requires-python = ">=3.12"
+        [[package]]
+        name = "project"
+        source = { future-source = "." }
+    "#})?;
+
+    uv_snapshot!(context.filters(), context.sync().arg("--frozen"), @"
+    exit_code: 1 (failure)
+    ----- stderr -----
+    error: The lockfile requires an unknown preview feature: `future-feature`
+
+    hint: Upgrade to a version of uv that supports the required preview features, or run `uv sync --refresh` to regenerate the lockfile.
+    ");
+    context.sync().arg("--refresh").assert().success();
+    Ok(())
+}
+
+/// `--refresh` re-reads the wheel. Unlike `--upgrade`, it must still verify the locked hash,
+/// even when it has to discard the preview resolution.
+#[test]
+fn preview_downgrade_preserves_wheel_hash() -> Result<()> {
+    let context = uv_test::test_context!("3.12");
+    let name = "demo-pkg".parse()?;
+    let version = "1.0.0".parse()?;
+    let [(filename, original), (_, replacement)] = ["original", "replacement"].map(|contents| {
+        WheelBuilder::new(&name, &version)
+            .files(&[("demo_pkg/data.txt", contents)])
+            .build()
+    });
+    let wheel = context.temp_dir.child(&filename);
+    wheel.write_binary(&original)?;
+    context
+        .temp_dir
+        .child("pyproject.toml")
+        .write_str(&formatdoc! {r#"
+            [project]
+            name = "project"
+            version = "0.1.0"
+            requires-python = ">=3.12"
+            dependencies = ["demo-pkg"]
+
+            [tool.uv.sources]
+            demo-pkg = {{ path = "{filename}" }}
+        "#})?;
+    context.lock().assert().success();
+    let stable = context.read("uv.lock");
+    context
+        .temp_dir
+        .child("uv.lock")
+        .write_str(&formatdoc! {r#"
+            requires-preview-features = ["future-feature"]
+            {stable}"#})?;
+    wheel.write_binary(&replacement)?;
+
+    let context = context
+        .with_filter((hex::encode(Sha256::digest(&original)), "[ORIGINAL_HASH]"))
+        .with_filter((
+            hex::encode(Sha256::digest(&replacement)),
+            "[REPLACEMENT_HASH]",
+        ));
+    uv_snapshot!(context.filters(), context.sync().arg("--refresh"), @"
+    exit_code: 1 (failure)
+    ----- stderr -----
+    Resolved 2 packages in [TIME]
+    error: Failed to read `demo-pkg @ file://[TEMP_DIR]/demo_pkg-1.0.0-py3-none-any.whl`
+      cause: Hash mismatch for `demo-pkg @ file://[TEMP_DIR]/demo_pkg-1.0.0-py3-none-any.whl`
+
+             Expected:
+               sha256:[ORIGINAL_HASH]
+
+             Computed:
+               sha256:[REPLACEMENT_HASH]
+
+    hint: `demo-pkg` (v1.0.0) was included because `project` (v0.1.0) depends on `demo-pkg`
+    ");
+    assert_eq!(context.read("uv.lock"), stable);
+    Ok(())
+}
+
 /// Sync a frozen resolution after removing the project manifest.
 #[test]
 fn sync_lockfile_without_manifest() -> Result<()> {

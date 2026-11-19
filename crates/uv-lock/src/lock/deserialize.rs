@@ -2,6 +2,7 @@
 //! to the general TOML parser.
 
 use std::borrow::Cow;
+use std::collections::BTreeSet;
 use std::fmt;
 
 use memchr::memchr3;
@@ -13,12 +14,13 @@ use smallvec::SmallVec;
 use toml_parser::decoder::{Encoding, IntegerRadix, ScalarKind};
 use toml_parser::{Raw, Span};
 
-use super::{Lock, LockParseError, VERSION};
+use super::{Lock, LockParseError, VERSION, check_preview_features};
 
 /// Parse noncanonical TOML once, retaining the header for diagnostics if deserializing fails.
 pub(super) fn from_general_toml(input: &str) -> Result<Lock, LockParseError> {
     let document = toml::de::DeTable::parse(input)?;
     let version = document.get_ref().get("version").cloned();
+    let previews = document.get_ref().get("requires-preview-features").cloned();
 
     Lock::deserialize(toml::Deserializer::from(document)).map_err(|mut source| {
         source.set_input(Some(input));
@@ -33,6 +35,12 @@ pub(super) fn from_general_toml(input: &str) -> Result<Lock, LockParseError> {
                 version,
                 source,
             };
+        }
+        if let Some(previews) = previews
+            && let Ok(features) = BTreeSet::deserialize(toml::de::ValueDeserializer::from(previews))
+            && let Err(err) = check_preview_features(&features)
+        {
+            return err;
         }
         LockParseError::Toml(source)
     })
@@ -1150,6 +1158,19 @@ version = "1.0.0"
                 version: actual,
                 ..
             } if actual == version
+        );
+    }
+
+    #[test]
+    fn unsupported_version_takes_precedence_over_malformed_preview_header() {
+        let input = formatdoc! {r#"
+            version = {version}
+            requires-python = ">=3.12"
+            requires-preview-features = true
+        "#, version = VERSION + 1};
+        assert_matches!(
+            Lock::from_toml(&input),
+            Err(LockParseError::UnparsableVersion { .. })
         );
     }
 

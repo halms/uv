@@ -184,6 +184,16 @@ pub async fn audit(
                 );
                 continue;
             }
+            Err(
+                error @ (LockParseError::UnknownPreviewFeatures(_)
+                | LockParseError::MissingPreviewFeatures(_)),
+            ) => {
+                if explicit_tool {
+                    bail!("Cannot audit tool `{name}`: {error}");
+                }
+                warn_user!("Skipping tool `{name}`: {error}");
+                continue;
+            }
             Err(LockParseError::Toml(error)) => {
                 if explicit_tool {
                     bail!(

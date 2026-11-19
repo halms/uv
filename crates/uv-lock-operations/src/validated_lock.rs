@@ -10,7 +10,7 @@ use uv_configuration::{Constraints, ExcludeDependency, Override, Upgrade};
 use uv_dispatch::BuildDispatch;
 use uv_distribution::DistributionDatabase;
 use uv_distribution_types::{DependencyMetadata, IndexLocations, Requirement, RequiresPython};
-use uv_lock::{GroupMetadata, Lock, LockSatisfaction};
+use uv_lock::{GroupMetadata, Lock, LockSatisfaction, check_preview_features};
 use uv_normalize::{DefaultGroups, GroupName, PackageName};
 use uv_preview::{Preview, PreviewFeature};
 use uv_pypi_types::{Conflicts, SupportedEnvironments};
@@ -73,6 +73,12 @@ impl ValidatedLock {
         // first (i.e., every check that returns `Self::Unusable`, followed by every check that
         // returns `Self::Versions`, followed by every check that returns `Self::Preferable`, and
         // finally `Self::Satisfies`).
+        if let Err(err) = check_preview_features(lock.requires_preview_features()) {
+            // Only an explicit refresh can reach validation with missing previews. Keep the
+            // hash checks from the lock, but don't reuse its resolution.
+            debug!("Regenerating lockfile: {err}");
+            return Ok(Self::Unusable(lock, LockMismatchReason::Refresh));
+        }
         if lock.resolution_mode() != options.resolution_mode {
             let _ = writeln!(
                 printer.stderr(),

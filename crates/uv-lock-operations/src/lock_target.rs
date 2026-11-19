@@ -356,7 +356,7 @@ impl<'lock> LockTarget<'lock> {
     /// Returns `Ok(None)` if the lockfile does not exist.
     pub async fn read(self) -> Result<Option<Lock>, LockError> {
         Ok(self
-            .read_with_contents()
+            .read_with_contents(false)
             .await?
             .map(|(lock, _contents)| lock))
     }
@@ -386,12 +386,21 @@ impl<'lock> LockTarget<'lock> {
     /// Read the lockfile and return the exact contents that were parsed.
     ///
     /// Returns `Ok(None)` if the lockfile does not exist.
-    pub(crate) async fn read_with_contents(self) -> Result<Option<(Lock, String)>, LockError> {
+    pub(crate) async fn read_with_contents(
+        self,
+        allow_preview_downgrade: bool,
+    ) -> Result<Option<(Lock, String)>, LockError> {
         let lock_path = self.lock_path();
         match fs_err::tokio::read_to_string(&lock_path).await {
             Ok(encoded) => {
-                let lock = info_span!("parse uv lock", path = %lock_path.display())
-                    .in_scope(|| Lock::from_toml(&encoded))?;
+                let span = info_span!("parse uv lock", path = %lock_path.display());
+                let lock = span.in_scope(|| {
+                    if allow_preview_downgrade {
+                        Lock::from_toml_for_inspection(&encoded)
+                    } else {
+                        Lock::from_toml(&encoded)
+                    }
+                })?;
                 Ok(Some((lock, encoded)))
             }
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),

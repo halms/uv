@@ -148,6 +148,16 @@ pub enum LockError {
     UnsupportedLockVersion(u32, u32),
 
     #[error(
+        "The lockfile requires {}: `{}`",
+        if .0.len() == 1 { "an unknown preview feature" } else { "unknown preview features" },
+        .0.join("`, `")
+    )]
+    UnknownPreviewFeatures(Vec<String>),
+
+    #[error("The lockfile requires preview features that are not enabled: `{}`", .0.join("`, `"))]
+    MissingPreviewFeatures(Vec<String>),
+
+    #[error(
         "Failed to parse `uv.lock`, which uses an unsupported schema version (v{1}, but only v{0} is supported). Downgrade to a compatible uv version, or remove the `uv.lock` prior to running `uv lock` or `uv sync`."
     )]
     UnparsableLockVersion(u32, u32, #[source] toml::de::Error),
@@ -245,6 +255,12 @@ impl From<LockParseError> for LockError {
                 source,
             } => Self::UnparsableLockVersion(supported, version, source),
             LockParseError::Toml(source) => Self::UvLockParse(source),
+            LockParseError::UnknownPreviewFeatures(features) => {
+                Self::UnknownPreviewFeatures(features)
+            }
+            LockParseError::MissingPreviewFeatures(features) => {
+                Self::MissingPreviewFeatures(features)
+            }
         }
     }
 }
@@ -253,6 +269,8 @@ impl From<LockError> for UvError {
     fn from(error: LockError) -> Self {
         match error {
             error @ (LockError::LockMismatch { .. }
+            | LockError::UnknownPreviewFeatures(..)
+            | LockError::MissingPreviewFeatures(..)
             | LockError::LockFormat(..)
             | LockError::MissingLockfile(..)
             | LockError::LockWorkspaceMismatch(..)) => Self::user(error),
@@ -291,6 +309,15 @@ impl From<LockError> for UvError {
 impl Hinted for LockError {
     fn hints(&self) -> Hints<'_> {
         match self {
+            Self::UnknownPreviewFeatures(_) => Hints::from(
+                "Upgrade to a version of uv that supports the required preview features, \
+                 or run `uv sync --refresh` to regenerate the lockfile.",
+            ),
+            Self::MissingPreviewFeatures(features) => Hints::from(format!(
+                "Pass `--preview-features {}` to use this lockfile, or run `uv sync --refresh` \
+                 to regenerate it without preview features.",
+                features.join(",")
+            )),
             Self::LockMismatch { .. } | Self::LockWorkspaceMismatch(..) => {
                 Hints::from("To update the lockfile, run `uv lock`.")
             }
