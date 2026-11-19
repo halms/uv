@@ -5,9 +5,10 @@ use predicates::prelude::predicate;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use uv_distribution_types::PEP_825_SCHEMA;
+use uv_lock::Lock;
 use uv_static::EnvVars;
 use uv_test::archive::generate_source_archive;
-use uv_test::uv_snapshot;
+use uv_test::{diff_snapshot, uv_snapshot};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -897,11 +898,27 @@ fn universal_lock_excludes_variant_wheels() -> Result<()> {
     });
 
     // A lockfile containing a variant wheel must not make it installable.
-    let lock = context.read("uv.lock").replace(
+    let stable = context.read("uv.lock");
+    let lock = stable.replace(
         "ok-1.0.0-py3-none-any.whl",
         "ok-1.0.0-9-py3-none-any-cpu.whl",
     );
-    context.temp_dir.child("uv.lock").write_str(&lock)?;
+    // Serializing a lock that actually contains the variant declares the requirement.
+    let serialized = Lock::from_canonical_toml(&lock)?.to_toml()?;
+    insta::assert_snapshot!(diff_snapshot(&lock, &serialized, 0), @r#"
+    --- old
+    +++ new
+    @@ -3,0 +4 @@
+    +requires-preview-features = ["wheel-variants"]
+    "#);
+    context.temp_dir.child("uv.lock").write_str(&serialized)?;
+    uv_snapshot!(context.filters(), context.sync(), @"
+    exit_code: 1 (failure)
+    ----- stderr -----
+    error: The lockfile requires preview features that are not enabled: `wheel-variants`
+
+    hint: Pass `--preview-features wheel-variants` to use this lockfile, or run `uv sync --refresh` to regenerate it without preview features.
+    ");
     uv_snapshot!(context.filters(), context.sync()
         .arg("--frozen")
         .arg("--preview-features")
@@ -910,6 +927,16 @@ fn universal_lock_excludes_variant_wheels() -> Result<()> {
     ----- stderr -----
     error: Distribution `ok==1.0.0 @ registry+[TEMP_DIR]/links` can't be installed because it doesn't have a source distribution or wheel for the current platform
     ");
+    uv_snapshot!(context.filters(), context.sync()
+        .args(["--refresh", "--no-index", "--find-links"]).arg(links.path()), @"
+    exit_code: 0 (success)
+    ----- stderr -----
+    Resolved 2 packages in [TIME]
+    Prepared 1 package in [TIME]
+    Installed 1 package in [TIME]
+     + ok==1.0.0
+    ");
+    assert_eq!(context.read("uv.lock"), stable);
     Ok(())
 }
 
