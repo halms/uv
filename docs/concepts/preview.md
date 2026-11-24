@@ -70,6 +70,10 @@ If a preview feature changes the structure of your `uv.lock`, you can only insta
 lockfile while the feature is active. To downgrade the lockfile, disable the feature and run
 `uv sync --refresh`.
 
+For example, uv records `requires-preview-features = ["lock-without-metadata"]` in `uv.lock` only
+when it omits package metadata. If there was no metadata to omit, the lockfile doesn't require the
+preview.
+
 ## Available preview features
 
 The following preview features are available:
